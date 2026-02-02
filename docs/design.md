@@ -565,96 +565,6 @@ const client2 = new KazahanaClient({
 期限切れリースを除去する際、最後のリースを `cachedLeaseForFallback` に保存。
 これによりリースサーバ障害時も衝突リスクの低いフォールバックが可能。
 
-### 5.10 高スループット環境での動的リース取得
-
-単一リースでシーケンスが不足する高性能サーバでは、複数リースを動的に取得して並列使用できる:
-
-```typescript
-class KazahanaClient {
-  private leases: LeaseInfo[] = [];
-  private currentThroughput: number = 0;
-  private cachedLeaseForFallback: LeaseInfo | null = null;
-
-  async nextId(timeout?: number): Promise<bigint> {
-    const deadline = timeout ?? this.config.nextIdTimeout;
-    const startTime = deadline ? Date.now() : 0;
-
-    while (true) {
-      if (deadline && Date.now() - startTime > deadline) {
-        throw new TimeoutError(deadline);
-      }
-
-      const timestamp = await this.getValidTimestamp();
-
-      // 使用可能なリースを探す（id昇順で走査）
-      for (const lease of this.leases) {
-        if (lease.isValidAt(timestamp) && !lease.isSequenceExhaustedAt(timestamp)) {
-          return lease.generate(timestamp);
-        }
-      }
-
-      // 全て枯渇 → 追加リース取得または待機
-      if (this.canAcquireMoreLeases() && this.provider && this.shouldRetryAcquire()) {
-        try {
-          await this.acquire();
-          continue;
-        } catch (e) {
-          this.onAcquireFailure();
-        }
-      }
-
-      // フォールバックまたは次のミリ秒まで待機
-      if (!this.disableFallback && this.fallbackLease) {
-        return this.generateFallbackId(timestamp);
-      }
-
-      await this.waitNextMillis(timestamp);
-    }
-  }
-
-  private async acquire(): Promise<void> {
-    const needed = this.maxThroughputPerMs - this.currentThroughput;
-    const response = await this.provider!.acquire(
-      this.serviceId,
-      this.getMeta(),
-      needed  // 不足分だけ要求
-    );
-
-    for (const lease of response.leases) {
-      this.leases.push(new LeaseInfo(lease));
-    }
-    this.leases.sort((a, b) => a.id - b.id);
-    this.pruneExpiredLeases();
-    this.updateThroughput();
-    this.onAcquireSuccess();
-  }
-
-  private pruneExpiredLeases(): void {
-    const now = Date.now();
-    const expiredLeases = this.leases.filter(l => !l.isValidAt(now));
-
-    if (expiredLeases.length > 0) {
-      this.cachedLeaseForFallback = expiredLeases[expiredLeases.length - 1];
-    }
-
-    this.leases = this.leases.filter(l => l.isValidAt(now));
-  }
-
-  private updateThroughput(): void {
-    this.currentThroughput = this.leases.reduce(
-      (sum, lease) => sum + (1 << lease.bitSeq),
-      0
-    );
-  }
-
-  private get fallbackLease(): LeaseInfo | null {
-    return this.leases[0] ?? this.cachedLeaseForFallback;
-  }
-}
-```
-
-→ ID純増性の保証については「付録A.8 複数リース取得時にid順でソートする理由」を参照
-
 ---
 
 ## 6. サーバ実装
@@ -1588,3 +1498,94 @@ ID生成自体はエンディアンに依存しない（純粋な数値演算）
 | スループット | 1ミリ秒あたりに生成可能なID数。リースのbitSeqから計算される |
 | 外部ID | 内部IDを変換した外部公開用のID。base64urlで11文字 |
 
+---
+
+## 付録D: クライアント実装リファレンス
+
+KazahanaClient の実装イメージ。
+
+```typescript
+class KazahanaClient {
+  private leases: LeaseInfo[] = [];
+  private currentThroughput: number = 0;
+  private cachedLeaseForFallback: LeaseInfo | null = null;
+
+  async nextId(timeout?: number): Promise<bigint> {
+    const deadline = timeout ?? this.config.nextIdTimeout;
+    const startTime = deadline ? Date.now() : 0;
+
+    while (true) {
+      if (deadline && Date.now() - startTime > deadline) {
+        throw new TimeoutError(deadline);
+      }
+
+      const timestamp = await this.getValidTimestamp();
+
+      // 使用可能なリースを探す（id昇順で走査）
+      for (const lease of this.leases) {
+        if (lease.isValidAt(timestamp) && !lease.isSequenceExhaustedAt(timestamp)) {
+          return lease.generate(timestamp);
+        }
+      }
+
+      // 全て枯渇 → 追加リース取得または待機
+      if (this.canAcquireMoreLeases() && this.provider && this.shouldRetryAcquire()) {
+        try {
+          await this.acquire();
+          continue;
+        } catch (e) {
+          this.onAcquireFailure();
+        }
+      }
+
+      // フォールバックまたは次のミリ秒まで待機
+      if (!this.disableFallback && this.fallbackLease) {
+        return this.generateFallbackId(timestamp);
+      }
+
+      await this.waitNextMillis(timestamp);
+    }
+  }
+
+  private async acquire(): Promise<void> {
+    const needed = this.config.maxThroughputPerMs - this.currentThroughput;
+    const response = await this.provider!.acquire({
+      serviceId: this.config.serviceId,
+      meta: this.getMeta(),
+      throughputPerMs: needed,
+    });
+
+    for (const lease of response.leases) {
+      this.leases.push(new LeaseInfo(lease));
+    }
+    this.leases.sort((a, b) => a.id - b.id);
+    this.pruneExpiredLeases();
+    this.updateThroughput();
+    this.onAcquireSuccess();
+  }
+
+  private pruneExpiredLeases(): void {
+    const now = Date.now();
+    const expiredLeases = this.leases.filter(l => !l.isValidAt(now));
+
+    if (expiredLeases.length > 0) {
+      this.cachedLeaseForFallback = expiredLeases[expiredLeases.length - 1];
+    }
+
+    this.leases = this.leases.filter(l => l.isValidAt(now));
+  }
+
+  private updateThroughput(): void {
+    this.currentThroughput = this.leases.reduce(
+      (sum, lease) => sum + (1 << lease.bitSeq),
+      0
+    );
+  }
+
+  private get fallbackLease(): LeaseInfo | null {
+    return this.leases[0] ?? this.cachedLeaseForFallback;
+  }
+}
+```
+
+→ ID純増性の保証については「付録A.8 複数リース取得時にid順でソートする理由」を参照
