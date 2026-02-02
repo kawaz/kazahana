@@ -183,18 +183,21 @@ interface LeaseInfo {
   expired: number;      // リース期限（Unix ms）
   secret: string;       // release用認証キー
 
-  // ビット配置（リースごとに異なる可能性あり）
+  // ビット配置（運用開始後は変更不可）
   customEpoch: number;  // カスタムエポック（Unix ms）
   bitReserve: number;   // 予約ビット数（通常1）
   bitTs: number;        // タイムスタンプビット数（通常41）
+
+  // ビット配置（運用中に調整される可能性あり）
   bitId: number;        // マシンIDビット数（通常14）
   bitSeq: number;       // シーケンスビット数（通常8）
 }
 ```
 
 **設計ポイント**:
-- ビット配置情報は `LeaseInfo` に含める（Provider側で動的に調整される可能性があるため）
-- 各リースは単体でID生成に必要な情報を全て持つ
+- ビット配置情報は `LeaseInfo` に含める（各リースが単体でID生成に必要な情報を全て持つ）
+- `customEpoch`, `bitReserve`, `bitTs` は運用開始後に変更不可（変更すると過去のIDと互換性がなくなる）
+- `bitId`, `bitSeq` は運用中にProvider側で調整される可能性がある
 - `bitSeq` が不揃いのリースで `throughputPerMs` を満たすケースもありうる
 
 ### 4.3 throughputPerMs による複数リース取得
