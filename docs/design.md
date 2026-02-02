@@ -197,8 +197,9 @@ interface LeaseInfo {
 **設計ポイント**:
 - ビット配置情報は `LeaseInfo` に含める（各リースが単体でID生成に必要な情報を全て持つ）
 - `customEpoch`, `bitReserve`, `bitTs` は運用開始後に変更不可（変更すると過去のIDと互換性がなくなる）
-- `bitId`, `bitSeq` は運用中にProvider側で調整される可能性がある
-- `bitSeq` が不揃いのリースで `throughputPerMs` を満たすケースもありうる
+- `bitId`, `bitSeq` は運用中にProvider側で動的に調整される可能性がある
+- Providerの実装によっては `bitSeq` を動的に調整し、返却されるリースの `bitSeq` が不揃いになることがある
+- クライアントは不揃いの `bitSeq` を持つリースを保持することを前提に設計されており、要求されたスループットを満たす点は変わらない
 
 ### 4.3 throughputPerMs による複数リース取得
 
@@ -228,7 +229,7 @@ const count = Math.ceil(throughputPerMs / maxPerLease);
 | 257 | ceil(257/256) | 2 |
 | 1024 | ceil(1024/256) | 4 |
 
-**注意**: サーバ側で `bitSeq` を動的に調整する場合、返却されるリースの `bitSeq` が不揃いになることがある。クライアントは各リースの `bitSeq` を参照してスループットを計算する必要がある。
+**注意**: クライアントは各リースの `bitSeq` を参照してスループットを計算する必要がある（不揃いの可能性があるため）。
 
 ### 4.4 リースライフサイクル
 
