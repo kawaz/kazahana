@@ -150,7 +150,7 @@ interface LeaseProvider {
 }
 
 interface AcquireOptions {
-  /** サービス識別子 */
+  /** サービス識別子（machineId の名前空間を分離） */
   serviceId?: string;
   /** メタ情報（ホスト名、プロセスID等） */
   meta?: Record<string, string>;
@@ -159,9 +159,11 @@ interface AcquireOptions {
 }
 
 interface ReleaseOptions {
+  /** サービス識別子 */
+  serviceId?: string;
   /** マシンID */
   id: number;
-  /** HMAC署名: hmac(secret, `${id}:${timestamp}`) */
+  /** HMAC署名: hmac(secret, `${serviceId}:${id}:${timestamp}`) */
   signature: string;
   /** 署名生成時のタイムスタンプ（Unix ms） */
   timestamp: number;
@@ -248,7 +250,7 @@ const count = Math.ceil(throughputPerMs / maxPerLease);
 
 - `secret` はリース発行時にサーバ側で生成し、クライアントに返却
 - `release` 時は `secret` を直接送信せず、HMAC署名を使用
-- 署名生成: `hmac(secret, "${id}:${timestamp}")`
+- 署名生成: `hmac(secret, "${serviceId}:${id}:${timestamp}")`
 - サーバ側でtimestamp検証（±30秒程度）によりリプレイ攻撃を防止
 - secretがネットワーク上を流れないため、ログに残っても安全
 
@@ -265,7 +267,7 @@ interface KazahanaClientConfig {
   /** リースプロバイダ。未指定でスタンドアロンモード */
   provider?: LeaseProvider;
 
-  /** サービス識別子 */
+  /** サービス識別子（machineId の名前空間を分離） */
   serviceId?: string;
 
   /**
@@ -571,26 +573,30 @@ const client2 = new KazahanaClient({
 
 ### 6.1 データモデル（Redis例）
 
+serviceId ごとに machineId の名前空間を分離する。
+
 ```
-Key: lease:{machineId}
+Key: lease:{serviceId}:{machineId}
 Value: Hash {
-  serviceId: string
   secret: string
   expired: number
   holder: string      // ホスト名等のメタ情報
   createdAt: number
 }
 
-Key: lease:last_assigned
+Key: lease:{serviceId}:last_assigned
 Value: number (最後に割り当てたmachineId)
 ```
+
+**名前空間の分離**: 同じ machineId でも serviceId が異なれば別のリースとして扱われる。これにより複数サービスが同じ LeaseProvider を共有できる。
 
 ### 6.2 acquire処理（Luaスクリプト）
 
 ```lua
 -- ラウンドロビン方式で空きIDを探索してアトミックに確保
 -- 前回割り当てたID+1から開始し、全体を均等に使用する
-local lastId = redis.call("GET", "lease:last_assigned") or -1
+local serviceId = ARGV.serviceId
+local lastId = redis.call("GET", "lease:" .. serviceId .. ":last_assigned") or -1
 lastId = tonumber(lastId)
 local start = (lastId + 1) % (maxMachineId + 1)
 local count = tonumber(ARGV.count)  -- 要求リース数
@@ -598,18 +604,17 @@ local results = {}
 
 for i = 0, maxMachineId do
   local id = (start + i) % (maxMachineId + 1)
-  local key = "lease:" .. id
+  local key = "lease:" .. serviceId .. ":" .. id
   local expires = redis.call("HGET", key, "expired")
   if not expires or tonumber(expires) < tonumber(ARGV.now) then
     local secret = ARGV.secret .. "_" .. #results
     redis.call("HMSET", key,
-      "serviceId", ARGV.serviceId,
       "secret", secret,
       "expired", ARGV.expired,
       "holder", ARGV.holder,
       "createdAt", ARGV.now
     )
-    redis.call("SET", "lease:last_assigned", id)
+    redis.call("SET", "lease:" .. serviceId .. ":last_assigned", id)
     table.insert(results, {id, secret})
 
     if #results >= count then
@@ -736,14 +741,14 @@ class RedisLeaseProvider implements LeaseProvider {
   }
 
   async release(options: ReleaseOptions): Promise<void> {
-    const { id, signature, timestamp } = options;
+    const { serviceId = 'default', id, signature, timestamp } = options;
 
     // タイムスタンプ検証（±30秒）
     if (Math.abs(Date.now() - timestamp) > 30000) {
       throw new Error('Timestamp expired');
     }
 
-    const stored = await this.redis.hget(`lease:${id}`, 'secret');
+    const stored = await this.redis.hget(`lease:${serviceId}:${id}`, 'secret');
     if (!stored) {
       throw new Error('Lease not found');
     }
@@ -751,13 +756,13 @@ class RedisLeaseProvider implements LeaseProvider {
     // HMAC検証
     const expected = crypto
       .createHmac('sha256', stored)
-      .update(`${id}:${timestamp}`)
+      .update(`${serviceId}:${id}:${timestamp}`)
       .digest('hex');
     if (signature !== expected) {
       throw new Error('Invalid signature');
     }
 
-    await this.redis.del(`lease:${id}`);
+    await this.redis.del(`lease:${serviceId}:${id}`);
   }
 }
 ```
@@ -1182,8 +1187,8 @@ provider.release(id, secret);
 **採用した設計**:
 ```typescript
 const timestamp = Date.now();
-const signature = hmac(secret, `${id}:${timestamp}`);
-provider.release(id, signature, timestamp);
+const signature = hmac(secret, `${serviceId}:${id}:${timestamp}`);
+provider.release({ serviceId, id, signature, timestamp });
 ```
 
 ### A.3 defaultEpochのデフォルト値をLIB_DEFAULT_EPOCHとした理由
