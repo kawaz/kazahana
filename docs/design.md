@@ -236,7 +236,7 @@ const count = Math.ceil(throughputPerMs / maxPerLease);
    └─▶ リース情報に基づきローカルでID生成
 
 3. 期限接近時: 新規リース取得
-   └─▶ 期限の90%経過で新しいacquire実行
+   └─▶ 期限の50%経過で新しいacquire実行
    └─▶ 古いリースは期限切れまで併用可能
 
 4. release: リース返却（graceful shutdown時）
@@ -301,7 +301,7 @@ interface KazahanaClientConfig {
   /**
    * リース更新閾値（0.0-1.0）
    * リース期限のこの割合を経過したら新規リースを取得
-   * @default 0.9
+   * @default 0.5
    */
   acquireThreshold?: number;
 
@@ -969,15 +969,17 @@ class TimeoutError extends Error {
 
 | 期間 | メリット | デメリット |
 |------|---------|-----------|
-| 短い（1-5分） | ID早期回収、枯渇しにくい | サーバ負荷高 |
+| 短い（1-5分） | ID早期回収、枯渇しにくい | サーバ負荷高、障害猶予短い |
 | 中程度（10-15分） | バランス良好 | - |
-| 長い（1-8時間） | サーバ負荷低 | 障害時の回収遅い |
+| 長い（1-8時間） | サーバ負荷低、障害猶予長い | 障害時の回収遅い |
 
-推奨: **10分**（デフォルト）。更新閾値は90%（9分で更新開始）。
+推奨: **10分**（デフォルト）。更新閾値は **50%**（5分で更新開始）。
 
-| TTL | 更新開始 | 更新頻度 |
-|-----|----------|----------|
-| 10分 | 9分後 | 6回/時間 |
+| TTL | 更新閾値 | 更新開始 | 障害猶予時間 |
+|-----|----------|----------|-------------|
+| 10分 | 50% | 5分後 | 5分 |
+
+**耐障害性**: 更新閾値50%により、リースサーバ障害時も残り期間（5分）はID生成を継続可能。この期間内に復旧すれば事実上影響を受けない。
 
 ### 10.3 監視項目
 
@@ -1128,7 +1130,7 @@ const DEFAULT_BIT_TS = 41;
 const DEFAULT_BIT_ID = 14;
 const DEFAULT_BIT_SEQ = 8;
 const DEFAULT_LEASE_DURATION = 10 * 60 * 1000;  // 10分
-const DEFAULT_ACQUIRE_THRESHOLD = 0.9;
+const DEFAULT_ACQUIRE_THRESHOLD = 0.5;
 const DEFAULT_MAX_BACKWARD_MS = 5000;
 const DEFAULT_ACQUIRE_RETRY_INTERVAL = 1000;
 const DEFAULT_ACQUIRE_RETRY_MAX_INTERVAL = 60000;
@@ -1163,7 +1165,7 @@ const DEFAULT_MAX_THROUGHPUT_PER_MS = 4096;    // Snowflake 12bit seq相当
    - クライアント実装がシンプルになる
    - サーバ実装もシンプルになる
 
-**代替設計**: 期限の90%経過時点で新規 `acquire` を実行し、シームレスに新しいリースへ移行する。
+**代替設計**: 期限の50%経過時点で新規 `acquire` を実行し、シームレスに新しいリースへ移行する。これにより残り50%の期間が障害猶予時間となり、耐障害性が向上する。
 
 ### A.2 release時にHMAC署名を採用した理由
 
