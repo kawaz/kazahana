@@ -263,32 +263,28 @@ const count = Math.ceil(throughputPerMs / maxPerLease);
 
 ```typescript
 interface KazahanaClientConfig {
+  // === よく使う設定 ===
+
   /** リースプロバイダ。未指定でスタンドアロンモード */
   provider?: LeaseProvider;
 
   /** サービス識別子 */
   serviceId?: string;
 
-  /** デフォルトエポック @default LIB_DEFAULT_EPOCH */
-  defaultEpoch?: number;
-
-  /** タイムスタンプビット数 @default 41 */
-  bitTs?: number;
-
   /**
-   * 時刻巻き戻り許容量（ミリ秒）
-   * - 正の値: 指定ms以内なら待機、超過でエラー
-   * - 0: 即エラー
-   * - 負の値: 無制限待機
-   * @default 5000
+   * 1ミリ秒あたりの最大ID生成数
+   * この値に達するまでリースを追加取得し、超過時は次のミリ秒まで待機
+   * @default 256 (1リース分)
    */
-  maxBackwardMs?: number;
+  maxThroughputPerMs?: number;
 
   /**
    * フォールバックID生成を無効化
    * @default false
    */
   disableFallback?: boolean;
+
+  // === あまり変更しない設定 ===
 
   /**
    * リース取得失敗後の初回リトライ間隔（ミリ秒）
@@ -303,11 +299,21 @@ interface KazahanaClientConfig {
   acquireRetryMaxInterval?: number;
 
   /**
-   * 1ミリ秒あたりの最大ID生成数
-   * この値に達するまでリースを追加取得し、超過時は次のミリ秒まで待機
-   * @default 256 (1リース分)
+   * 時刻巻き戻り許容量（ミリ秒）
+   * - 正の値: 指定ms以内なら待機、超過でエラー
+   * - 0: 即エラー
+   * - 負の値: 無制限待機
+   * @default 5000
    */
-  maxThroughputPerMs?: number;
+  maxBackwardMs?: number;
+
+  // === 通常は変更不要 ===
+
+  /** タイムスタンプビット数 @default 41 */
+  bitTs?: number;
+
+  /** デフォルトエポック（スタンドアロンモード用） @default LIB_DEFAULT_EPOCH */
+  defaultEpoch?: number;
 }
 ```
 
