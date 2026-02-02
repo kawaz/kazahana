@@ -569,32 +569,33 @@ class KazahanaClient {
   private cachedLeaseForFallback: LeaseInfo | null = null;
 
   async nextId(): Promise<bigint> {
-    const timestamp = await this.getValidTimestamp();
+    while (true) {
+      const timestamp = await this.getValidTimestamp();
 
-    // 使用可能なリースを探す（id昇順で走査）
-    for (const lease of this.leases) {
-      if (lease.isValidAt(timestamp) && !lease.isSequenceExhaustedAt(timestamp)) {
-        return lease.generate(timestamp);
+      // 使用可能なリースを探す（id昇順で走査）
+      for (const lease of this.leases) {
+        if (lease.isValidAt(timestamp) && !lease.isSequenceExhaustedAt(timestamp)) {
+          return lease.generate(timestamp);
+        }
       }
-    }
 
-    // 全て枯渇 → 追加リース取得または待機
-    if (this.canAcquireMoreLeases() && this.provider && this.shouldRetryAcquire()) {
-      try {
-        await this.acquire();
-        return this.nextId();
-      } catch (e) {
-        this.onAcquireFailure();
+      // 全て枯渇 → 追加リース取得または待機
+      if (this.canAcquireMoreLeases() && this.provider && this.shouldRetryAcquire()) {
+        try {
+          await this.acquire();
+          continue;
+        } catch (e) {
+          this.onAcquireFailure();
+        }
       }
-    }
 
-    // フォールバックまたは次のミリ秒まで待機
-    if (!this.disableFallback && this.fallbackLease) {
-      return this.generateFallbackId(timestamp);
-    }
+      // フォールバックまたは次のミリ秒まで待機
+      if (!this.disableFallback && this.fallbackLease) {
+        return this.generateFallbackId(timestamp);
+      }
 
-    await this.waitNextMillis(timestamp);
-    return this.nextId();
+      await this.waitNextMillis(timestamp);
+    }
   }
 
   private async acquire(): Promise<void> {
