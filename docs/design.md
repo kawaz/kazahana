@@ -648,6 +648,7 @@ interface ServiceConfig {
   bitId: number;
   bitSeq: number;
   leaseDuration: number;  // ミリ秒
+  minTtlRate: number;     // TTL分散の下限率（0.0-1.0）
 }
 
 // デフォルト設定
@@ -659,8 +660,38 @@ const DEFAULT_CONFIG: ServiceConfig = {
   bitId: 14,
   bitSeq: 8,
   leaseDuration: 10 * 60 * 1000,  // 10分
+  minTtlRate: 0.5,
 };
 ```
+
+### 6.5 TTL分散
+
+複数リースを同時発行する際、全て同じTTLだと一斉に期限切れになり、更新タイミングが集中する。これを防ぐため、TTLを分散させて発行する。
+
+#### 計算式
+
+```typescript
+// count個のリースを同時発行する場合
+for (let i = 0; i < count; i++) {
+  const rate = 1 - i * (1 - minTtlRate) / count;
+  const ttl = leaseDuration * rate;
+  // このttlでリースを発行
+}
+```
+
+#### 例
+
+| minTtlRate | 1個発行 | 2個発行 | 3個発行 | 4個発行 |
+|------------|---------|---------|---------|---------|
+| 1.0 (分散なし) | [100%] | [100%, 100%] | [100%, 100%, 100%] | ... |
+| 0.5 (デフォルト) | [100%] | [100%, 75%] | [100%, 83%, 67%] | [100%, 88%, 75%, 63%] |
+| 0.0 (最大分散) | [100%] | [100%, 50%] | [100%, 67%, 33%] | [100%, 75%, 50%, 25%] |
+
+#### 効果
+
+- リース更新タイミングが分散され、一斉更新を防止
+- リースサーバ障害時も、一部のリースはまだ有効な状態を維持しやすい
+- `minTtlRate=1.0` で従来動作（分散なし）
 
 ---
 
@@ -1136,6 +1167,7 @@ const DEFAULT_ACQUIRE_RETRY_INTERVAL = 1000;
 const DEFAULT_ACQUIRE_RETRY_MAX_INTERVAL = 60000;
 const DEFAULT_MIN_THROUGHPUT_PER_MS = 1;       // 起動時1リース
 const DEFAULT_MAX_THROUGHPUT_PER_MS = 4096;    // Snowflake 12bit seq相当
+const DEFAULT_MIN_TTL_RATE = 0.5;              // TTL分散の下限率
 ```
 
 ---
