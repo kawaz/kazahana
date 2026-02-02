@@ -287,6 +287,13 @@ interface KazahanaClientConfig {
    */
   disableFallback?: boolean;
 
+  /**
+   * nextId() のデフォルトタイムアウト（ms）
+   * disableFallback=true の場合は設定推奨
+   * @default undefined (無制限)
+   */
+  nextIdTimeout?: number;
+
   // === あまり変更しない設定 ===
 
   /**
@@ -568,8 +575,15 @@ class KazahanaClient {
   private currentThroughput: number = 0;
   private cachedLeaseForFallback: LeaseInfo | null = null;
 
-  async nextId(): Promise<bigint> {
+  async nextId(timeout?: number): Promise<bigint> {
+    const deadline = timeout ?? this.config.nextIdTimeout;
+    const startTime = deadline ? Date.now() : 0;
+
     while (true) {
+      if (deadline && Date.now() - startTime > deadline) {
+        throw new TimeoutError(deadline);
+      }
+
       const timestamp = await this.getValidTimestamp();
 
       // 使用可能なリースを探す（id昇順で走査）
@@ -1006,6 +1020,13 @@ class NoProviderError extends Error {
   constructor() {
     super('No provider configured and fallback is disabled');
     this.name = 'NoProviderError';
+  }
+}
+
+class TimeoutError extends Error {
+  constructor(public readonly timeoutMs: number) {
+    super(`nextId() timed out after ${timeoutMs}ms`);
+    this.name = 'TimeoutError';
   }
 }
 ```
