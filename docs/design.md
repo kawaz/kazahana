@@ -269,9 +269,15 @@ interface KazahanaClientConfig {
   serviceId?: string;
 
   /**
-   * 1ミリ秒あたりの最大ID生成数
-   * この値に達するまでリースを追加取得し、超過時は次のミリ秒まで待機
-   * @default 256 (1リース分)
+   * 起動時に確保する最低スループット（/ms）
+   * @default 1
+   */
+  minThroughputPerMs?: number;
+
+  /**
+   * スループット上限（/ms）
+   * シーケンス枯渇時にこの値までリースを追加取得する
+   * @default 4096 (Snowflake 12bit sequence相当)
    */
   maxThroughputPerMs?: number;
 
@@ -282,6 +288,13 @@ interface KazahanaClientConfig {
   disableFallback?: boolean;
 
   // === あまり変更しない設定 ===
+
+  /**
+   * リース更新閾値（0.0-1.0）
+   * リース期限のこの割合を経過したら新規リースを取得
+   * @default 0.9
+   */
+  acquireThreshold?: number;
 
   /**
    * リース取得失敗後の初回リトライ間隔（ミリ秒）
@@ -368,13 +381,10 @@ nextId() 呼び出し
 ### 5.5 リース更新戦略
 
 ```typescript
-// 期限の90%経過で新規リース取得開始
-const ACQUIRE_THRESHOLD = 0.9;
-
 const elapsed = now - lease.created;
 const duration = lease.expired - lease.created;
 
-if (elapsed > duration * ACQUIRE_THRESHOLD) {
+if (elapsed > duration * this.config.acquireThreshold) {
   // バックグラウンドで新規acquire（ID生成はブロックしない）
   this.acquireInBackground();
 }
@@ -460,9 +470,12 @@ interval = min(acquireRetryInterval × 2^(failures-1), acquireRetryMaxInterval)
 リトライ待機中はフォールバックモードでID生成を継続（disableFallback=falseの場合）。
 リース取得成功で失敗カウンタはリセットされる。
 
-### 5.8 スループット制限
+### 5.8 スループット制御
 
-単一クライアントによるリース大量取得を防ぐため、スループット上限を設定できる。
+`minThroughputPerMs` と `maxThroughputPerMs` でスループットを制御する。
+
+- **起動時**: `minThroughputPerMs` 分のリースを事前確保
+- **運用中**: シーケンス枯渇時に `maxThroughputPerMs` まで追加取得
 
 #### 計算方法
 
@@ -511,13 +524,20 @@ currentThroughput = Σ(2^lease.bitSeq) for each lease
 #### 使用例
 
 ```typescript
-// 低スループット環境（デフォルト: 1リースのみ）
+// デフォルト: 起動時1リース、必要に応じて最大4096/msまで拡張
 const client1 = new KazahanaClient({ provider });
 
-// 高スループット環境（最大1024ID/ms）
+// 起動時から高スループットを確保
 const client2 = new KazahanaClient({
   provider,
-  maxThroughputPerMs: 1024,  // 4リース取得
+  minThroughputPerMs: 1024,  // 起動時に4リース確保
+  maxThroughputPerMs: 4096,  // 最大16リースまで
+});
+
+// 低スループット環境（リース追加取得を抑制）
+const client3 = new KazahanaClient({
+  provider,
+  maxThroughputPerMs: 256,   // 1リースのみ
 });
 ```
 
@@ -1175,7 +1195,8 @@ const DEFAULT_ACQUIRE_THRESHOLD = 0.9;
 const DEFAULT_MAX_BACKWARD_MS = 5000;
 const DEFAULT_ACQUIRE_RETRY_INTERVAL = 1000;
 const DEFAULT_ACQUIRE_RETRY_MAX_INTERVAL = 60000;
-const DEFAULT_MAX_THROUGHPUT_PER_MS = 256;  // 1リース分
+const DEFAULT_MIN_THROUGHPUT_PER_MS = 1;       // 起動時1リース
+const DEFAULT_MAX_THROUGHPUT_PER_MS = 4096;    // Snowflake 12bit seq相当
 ```
 
 ---
