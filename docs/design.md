@@ -1,4 +1,4 @@
-# Snowflake-like 分散ID生成システム 設計書
+# kazahana 設計書
 
 ## 1. 概要
 
@@ -104,8 +104,8 @@ Snowflake の利点（時刻順ソート可能、高性能、64bit）を維持�
 
 ```
 ┌─────────────────┐     ┌─────────────────┐
-│  Application    │────▶│  Snowflake      │
-│  Server         │     │  Client         │
+│  Application    │────▶│    Kazahana     │
+│  Server         │     │    Client       │
 └─────────────────┘     └────────┬────────┘
                                  │
                                  ▼
@@ -262,7 +262,7 @@ const count = Math.ceil(throughputPerMs / maxPerLease);
 ### 5.1 設定
 
 ```typescript
-interface SnowflakeClientConfig {
+interface KazahanaClientConfig {
   /** リースプロバイダ。未指定でスタンドアロンモード */
   provider?: LeaseProvider;
 
@@ -509,10 +509,10 @@ currentThroughput = Σ(2^lease.bitSeq) for each lease
 
 ```typescript
 // 低スループット環境（デフォルト: 1リースのみ）
-const client1 = new SnowflakeClient({ provider });
+const client1 = new KazahanaClient({ provider });
 
 // 高スループット環境（最大1024ID/ms）
-const client2 = new SnowflakeClient({
+const client2 = new KazahanaClient({
   provider,
   maxThroughputPerMs: 1024,  // 4リース取得
 });
@@ -546,7 +546,7 @@ const client2 = new SnowflakeClient({
 単一リースでシーケンスが不足する高性能サーバでは、複数リースを動的に取得して並列使用できる:
 
 ```typescript
-class SnowflakeClient {
+class KazahanaClient {
   private leases: LeaseInfo[] = [];
   private currentThroughput: number = 0;
   private cachedLeaseForFallback: LeaseInfo | null = null;
@@ -1045,7 +1045,7 @@ class NoProviderError extends Error {
 
 ```typescript
 // 金融システム等、ID重複が許されない環境
-const client = new SnowflakeClient({
+const client = new KazahanaClient({
   provider: new HttpLeaseProvider('https://id.example.com'),
   maxBackwardMs: 0,
   disableFallback: true,
@@ -1064,18 +1064,18 @@ const client = new SnowflakeClient({
 
 ```typescript
 // スタンドアロン（最小構成）
-const client = new SnowflakeClient();
+const client = new KazahanaClient();
 const id = await client.nextId();
 
 // HTTPサーバ使用
-const client = new SnowflakeClient({
+const client = new KazahanaClient({
   provider: new HttpLeaseProvider('https://id.example.com'),
   serviceId: 'payment-service',
 });
 const id = await client.nextId();
 
 // Redis直接使用
-const client = new SnowflakeClient({
+const client = new KazahanaClient({
   provider: new RedisLeaseProvider(redis),
 });
 const id = await client.nextId();
@@ -1094,7 +1094,7 @@ process.on('SIGTERM', async () => {
 
 ```typescript
 // 最大1024ID/msまで自動でリース追加取得
-const client = new SnowflakeClient({
+const client = new KazahanaClient({
   provider: new HttpLeaseProvider('https://id.example.com'),
   maxThroughputPerMs: 1024,  // 4リース取得
 });
@@ -1103,7 +1103,7 @@ const client = new SnowflakeClient({
 ### 11.4 VM環境（時刻ジャンプ許容）
 
 ```typescript
-const client = new SnowflakeClient({
+const client = new KazahanaClient({
   provider: new HttpLeaseProvider('https://id.example.com'),
   maxBackwardMs: -1,  // 無制限待機
 });
