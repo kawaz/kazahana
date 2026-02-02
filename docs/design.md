@@ -524,24 +524,11 @@ currentThroughput = Σ(2^lease.bitSeq) for each lease
 #### 使用例
 
 ```typescript
-// デフォルト: 起動時1リース、必要に応じて最大4096/msまで拡張
-const client1 = new KazahanaClient({ provider });
+// デフォルト: 起動時1リース、必要に応じて最大4096/msまで自動拡張
+const client = new KazahanaClient({ provider });
 
-// 起動時から高スループットを確保
+// 起動時から最大スループットを確保したい場合（min=max）
 const client2 = new KazahanaClient({
-  provider,
-  minThroughputPerMs: 1024,  // 起動時に4リース確保
-  maxThroughputPerMs: 4096,  // 最大16リースまで
-});
-
-// 低スループット環境（リース追加取得を抑制）
-const client3 = new KazahanaClient({
-  provider,
-  maxThroughputPerMs: 256,   // 1リースのみ
-});
-
-// 起動時から最大スループットを確保（min=max）
-const client4 = new KazahanaClient({
   provider,
   minThroughputPerMs: 4096,
   maxThroughputPerMs: 4096,
