@@ -539,6 +539,13 @@ const client3 = new KazahanaClient({
   provider,
   maxThroughputPerMs: 256,   // 1リースのみ
 });
+
+// 起動時から最大スループットを確保（min=max）
+const client4 = new KazahanaClient({
+  provider,
+  minThroughputPerMs: 4096,
+  maxThroughputPerMs: 4096,
+});
 ```
 
 ### 5.9 リースのライフサイクル管理
