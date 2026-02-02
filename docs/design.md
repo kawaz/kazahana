@@ -333,6 +333,9 @@ interface KazahanaClientConfig {
 
   /** デフォルトエポック（スタンドアロンモード用） @default LIB_DEFAULT_EPOCH */
   defaultEpoch?: number;
+
+  /** 外部ID変換用シークレット（未指定でビット分散のみ） */
+  externalIdSecret?: string;
 }
 ```
 
@@ -931,18 +934,71 @@ class MemoryLeaseProvider implements LeaseProvider {
 - パディング（`=`）なし
 - 固定長11文字
 
-### 8.6 使用パターン
+### 8.6 API
+
+#### クライアントメソッド
 
 ```typescript
+class KazahanaClient {
+  // 内部ID → 外部ID
+  toExternalId(id: bigint): string
+  fromInternalId(id: bigint): string  // エイリアス
+
+  // 外部ID → 内部ID
+  toInternalId(externalId: string): bigint
+  fromExternalId(externalId: string): bigint  // エイリアス
+}
+```
+
+クライアント経由で使用する場合、`externalIdSecret` は ClientConfig で管理される。
+
+```typescript
+interface KazahanaClientConfig {
+  /** 外部ID変換用シークレット（未指定でビット分散のみ） */
+  externalIdSecret?: string;
+}
+```
+
+#### 個別関数（スタンドアロン）
+
+```typescript
+// シークレットなし: ビット分散のみ
+function toExternalId(id: bigint, secret?: string): string
+function toInternalId(externalId: string, secret?: string): bigint
+
+// エイリアス
+function fromInternalId(id: bigint, secret?: string): string
+function fromExternalId(externalId: string, secret?: string): bigint
+```
+
+### 8.7 使用パターン
+
+```typescript
+// クライアント経由
+const client = new KazahanaClient({
+  provider,
+  externalIdSecret: 'my-secret-key',  // オプション
+});
+const id = await client.nextId();
+const externalId = client.toExternalId(id);
+
 // DB保存: 内部IDのまま（ソート・インデックス効率）
-await db.insert({ id: internalId, ... });
+await db.insert({ id, ... });
 
 // APIレスポンス: 外部IDに変換
-return { id: toExternalId(internalId), ... };  // "Abc123XyZ90"
+return { id: client.toExternalId(id), ... };  // "Abc123XyZ90"
 
 // APIリクエスト: 内部IDに復元
-const internalId = toInternalId(req.params.id);
+const internalId = client.toInternalId(req.params.id);
 const record = await db.findById(internalId);
+```
+
+```typescript
+// 個別関数（クライアントなしで変換のみ）
+import { toExternalId, toInternalId } from 'kazahana';
+
+const externalId = toExternalId(123456789n);
+const internalId = toInternalId(externalId);
 ```
 
 ---
