@@ -771,8 +771,9 @@ class RedisLeaseProvider implements LeaseProvider {
 
 ```typescript
 class MemoryLeaseProvider implements LeaseProvider {
-  private leases = new Map<number, { secret: string; expired: number }>();
-  private lastAssigned = -1;
+  // serviceId:machineId → lease
+  private leases = new Map<string, { secret: string; expired: number }>();
+  private lastAssigned = new Map<string, number>();
   private readonly config = {
     customEpoch: Date.parse("2026-01-01T00:00:00Z"),
     bitReserve: 1,
@@ -781,21 +782,26 @@ class MemoryLeaseProvider implements LeaseProvider {
     bitSeq: 8,
   };
 
+  private key(serviceId: string, id: number): string {
+    return `${serviceId}:${id}`;
+  }
+
   async acquire(options: AcquireOptions): Promise<AcquireResponse> {
-    const { throughputPerMs = 1 } = options;
+    const { serviceId = 'default', throughputPerMs = 1 } = options;
     const now = Date.now();
     const expired = now + 600000;  // 10分
     const maxPerLease = 1 << this.config.bitSeq;  // 256
     const count = Math.ceil(throughputPerMs / maxPerLease);
     const results: LeaseInfo[] = [];
+    const lastId = this.lastAssigned.get(serviceId) ?? -1;
 
     for (let i = 0; i < 8192 && results.length < count; i++) {
-      const id = (this.lastAssigned + 1 + i) % 8192;
-      const existing = this.leases.get(id);
+      const id = (lastId + 1 + i) % 8192;
+      const existing = this.leases.get(this.key(serviceId, id));
       if (!existing || existing.expired < now) {
         const secret = Math.random().toString(36).slice(2);
-        this.leases.set(id, { secret, expired });
-        this.lastAssigned = id;
+        this.leases.set(this.key(serviceId, id), { secret, expired });
+        this.lastAssigned.set(serviceId, id);
         results.push({
           id,
           created: now,
@@ -814,13 +820,13 @@ class MemoryLeaseProvider implements LeaseProvider {
   }
 
   async release(options: ReleaseOptions): Promise<void> {
-    const { id, signature, timestamp } = options;
+    const { serviceId = 'default', id, signature, timestamp } = options;
 
     if (Math.abs(Date.now() - timestamp) > 30000) {
       throw new Error('Timestamp expired');
     }
 
-    const lease = this.leases.get(id);
+    const lease = this.leases.get(this.key(serviceId, id));
     if (!lease) {
       throw new Error('Lease not found');
     }
@@ -828,13 +834,13 @@ class MemoryLeaseProvider implements LeaseProvider {
     const crypto = require('crypto');
     const expected = crypto
       .createHmac('sha256', lease.secret)
-      .update(`${id}:${timestamp}`)
+      .update(`${serviceId}:${id}:${timestamp}`)
       .digest('hex');
     if (signature !== expected) {
       throw new Error('Invalid signature');
     }
 
-    this.leases.delete(id);
+    this.leases.delete(this.key(serviceId, id));
   }
 }
 ```
