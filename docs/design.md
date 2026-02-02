@@ -1085,13 +1085,14 @@ process.on('SIGTERM', async () => {
 });
 ```
 
-### 11.3 高スループット環境
+### 11.3 起動時からスループットを確保
 
 ```typescript
-// 最大1024ID/msまで自動でリース追加取得
+// 起動時から4096ID/msを確保（min=max）
 const client = new KazahanaClient({
   provider: new HttpLeaseProvider('https://id.example.com'),
-  maxThroughputPerMs: 1024,  // 4リース取得
+  minThroughputPerMs: 4096,
+  maxThroughputPerMs: 4096,
 });
 ```
 
