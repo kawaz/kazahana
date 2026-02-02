@@ -140,23 +140,31 @@ Snowflake の利点（時刻順ソート可能、高性能、64bit）を維持�
 interface LeaseProvider {
   /**
    * 新しいマシンIDをリースする
-   * @param serviceId - サービス識別子（オプション）
-   * @param meta - メタ情報（ホスト名、プロセスID等）
-   * @param throughputPerMs - 必要スループット/ms（デフォルト: 1）
    */
-  acquire(
-    serviceId?: string,
-    meta?: Record<string, string>,
-    throughputPerMs?: number
-  ): Promise<AcquireResponse>;
+  acquire(options: AcquireOptions): Promise<AcquireResponse>;
 
   /**
    * リースを返却する
-   * @param id - マシンID
-   * @param signature - HMAC署名: hmac(secret, `${id}:${timestamp}`)
-   * @param timestamp - 署名生成時のタイムスタンプ（Unix ms）
    */
-  release(id: number, signature: string, timestamp: number): Promise<void>;
+  release(options: ReleaseOptions): Promise<void>;
+}
+
+interface AcquireOptions {
+  /** サービス識別子 */
+  serviceId?: string;
+  /** メタ情報（ホスト名、プロセスID等） */
+  meta?: Record<string, string>;
+  /** 追加で必要なスループット/ms */
+  throughputPerMs?: number;
+}
+
+interface ReleaseOptions {
+  /** マシンID */
+  id: number;
+  /** HMAC署名: hmac(secret, `${id}:${timestamp}`) */
+  signature: string;
+  /** 署名生成時のタイムスタンプ（Unix ms） */
+  timestamp: number;
 }
 ```
 
@@ -164,39 +172,60 @@ interface LeaseProvider {
 
 ```typescript
 interface AcquireResponse {
-  // ビット配置（全リース共通）
+  /** 取得したリース（throughputPerMsに応じて1つ以上） */
+  leases: LeaseInfo[];
+}
+
+interface LeaseInfo {
+  // リース固有情報
+  id: number;           // 割り当てられたマシンID
+  created: number;      // リース開始時刻（Unix ms）
+  expired: number;      // リース期限（Unix ms）
+  secret: string;       // release用認証キー
+
+  // ビット配置（リースごとに異なる可能性あり）
   customEpoch: number;  // カスタムエポック（Unix ms）
   bitReserve: number;   // 予約ビット数（通常1）
   bitTs: number;        // タイムスタンプビット数（通常41）
   bitId: number;        // マシンIDビット数（通常14）
   bitSeq: number;       // シーケンスビット数（通常8）
-
-  // 複数リース（throughputPerMsに応じて1つ以上）
-  leases: LeaseInfo[];
-}
-
-interface LeaseInfo {
-  id: number;           // 割り当てられたマシンID
-  created: number;      // リース開始時刻（Unix ms）
-  expired: number;      // リース期限（Unix ms）
-  secret: string;       // release用認証キー
 }
 ```
+
+**設計ポイント**:
+- ビット配置情報は `LeaseInfo` に含める（Provider側で動的に調整される可能性があるため）
+- 各リースは単体でID生成に必要な情報を全て持つ
+- `bitSeq` が不揃いのリースで `throughputPerMs` を満たすケースもありうる
 
 ### 4.3 throughputPerMs による複数リース取得
 
+クライアントは、コンフィグで指定された `maxThroughputPerMs` から現在保持しているリースのスループット合計を差し引いた分を `acquire` で要求する。
+
 ```typescript
-// サーバ側の計算
-const maxPerLease = 1 << bitSeq;  // 256 (bitSeq=8)
+// クライアント側の計算
+const currentThroughput = leases.reduce((sum, l) => sum + (1 << l.bitSeq), 0);
+const needed = config.maxThroughputPerMs - currentThroughput;
+
+if (needed > 0) {
+  const response = await provider.acquire({ throughputPerMs: needed });
+  // ...
+}
+```
+
+```typescript
+// サーバ側の計算（bitSeqが均一の場合の例）
+const maxPerLease = 1 << defaultBitSeq;  // 256 (bitSeq=8)
 const count = Math.ceil(throughputPerMs / maxPerLease);
 ```
 
-| throughputPerMs | 計算 | 返却リース数 |
-|-----------------|------|-------------|
+| 要求 throughputPerMs | サーバ側計算 | 返却リース数 |
+|---------------------|--------------|-------------|
 | 1（デフォルト） | ceil(1/256) | 1 |
 | 256 | ceil(256/256) | 1 |
 | 257 | ceil(257/256) | 2 |
 | 1024 | ceil(1024/256) | 4 |
+
+**注意**: サーバ側で `bitSeq` を動的に調整する場合、返却されるリースの `bitSeq` が不揃いになることがある。クライアントは各リースの `bitSeq` を参照してスループットを計算する必要がある。
 
 ### 4.4 リースライフサイクル
 
@@ -286,7 +315,7 @@ interface SnowflakeClientConfig {
 
 ```
 優先順位:
-1. AcquireResponse.customEpoch（API正常時）
+1. LeaseInfo.customEpoch（API正常時、リースから取得）
 2. キャッシュされたエポック（API障害時、過去に取得成功していれば）
 3. config.defaultEpoch（LIB_DEFAULT_EPOCHがデフォルト）
 ```
@@ -294,8 +323,9 @@ interface SnowflakeClientConfig {
 ### 5.3 エポック不一致検出
 
 ```typescript
-if (cachedEpoch && cachedEpoch !== response.customEpoch) {
-  console.error(`Epoch mismatch! cached: ${cachedEpoch}, server: ${response.customEpoch}`);
+const newEpoch = response.leases[0]?.customEpoch;
+if (cachedEpoch && newEpoch && cachedEpoch !== newEpoch) {
+  console.error(`Epoch mismatch! cached: ${cachedEpoch}, server: ${newEpoch}`);
 }
 ```
 
@@ -695,21 +725,18 @@ const DEFAULT_CONFIG: ServiceConfig = {
 class HttpLeaseProvider implements LeaseProvider {
   constructor(private endpoint: string) {}
 
-  async acquire(
-    serviceId?: string,
-    meta?: Record<string, string>,
-    throughputPerMs: number = 1
-  ): Promise<AcquireResponse> {
+  async acquire(options: AcquireOptions): Promise<AcquireResponse> {
     const res = await fetch(`${this.endpoint}/lease`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ serviceId, meta, throughputPerMs }),
+      body: JSON.stringify(options),
     });
     if (!res.ok) throw new Error(`acquire failed: ${res.status}`);
     return res.json();
   }
 
-  async release(id: number, signature: string, timestamp: number): Promise<void> {
+  async release(options: ReleaseOptions): Promise<void> {
+    const { id, signature, timestamp } = options;
     const res = await fetch(`${this.endpoint}/lease/${id}`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
@@ -729,11 +756,8 @@ class RedisLeaseProvider implements LeaseProvider {
     private config: ServiceConfig = DEFAULT_CONFIG
   ) {}
 
-  async acquire(
-    serviceId?: string,
-    meta?: Record<string, string>,
-    throughputPerMs: number = 1
-  ): Promise<AcquireResponse> {
+  async acquire(options: AcquireOptions): Promise<AcquireResponse> {
+    const { serviceId, meta, throughputPerMs = 1 } = options;
     const config = this.getServiceConfig(serviceId);
     const now = Date.now();
     const secret = crypto.randomBytes(16).toString('hex');
@@ -744,7 +768,7 @@ class RedisLeaseProvider implements LeaseProvider {
     const maxPerLease = 1 << config.bitSeq;
     const count = Math.ceil(throughputPerMs / maxPerLease);
 
-    const results = await this.redis.eval(
+    const results = await this.redis.evalScript(
       ACQUIRE_SCRIPT,
       0,
       maxId, now, expired, secret, serviceId || '', JSON.stringify(meta || {}), count
@@ -755,21 +779,23 @@ class RedisLeaseProvider implements LeaseProvider {
     }
 
     return {
-      customEpoch: config.customEpoch,
-      bitReserve: config.bitReserve,
-      bitTs: config.bitTs,
-      bitId: config.bitId,
-      bitSeq: config.bitSeq,
-      leases: results.map(([id, secret]: [number, string]) => ({
+      leases: results.map(([id, leaseSecret]: [number, string]) => ({
         id,
         created: now,
         expired,
-        secret,
+        secret: leaseSecret,
+        customEpoch: config.customEpoch,
+        bitReserve: config.bitReserve,
+        bitTs: config.bitTs,
+        bitId: config.bitId,
+        bitSeq: config.bitSeq,
       })),
     };
   }
 
-  async release(id: number, signature: string, timestamp: number): Promise<void> {
+  async release(options: ReleaseOptions): Promise<void> {
+    const { id, signature, timestamp } = options;
+
     // タイムスタンプ検証（±30秒）
     if (Math.abs(Date.now() - timestamp) > 30000) {
       throw new Error('Timestamp expired');
@@ -800,15 +826,19 @@ class RedisLeaseProvider implements LeaseProvider {
 class MemoryLeaseProvider implements LeaseProvider {
   private leases = new Map<number, { secret: string; expired: number }>();
   private lastAssigned = -1;
+  private readonly config = {
+    customEpoch: Date.parse("2026-01-01T00:00:00Z"),
+    bitReserve: 1,
+    bitTs: 41,
+    bitId: 14,
+    bitSeq: 8,
+  };
 
-  async acquire(
-    serviceId?: string,
-    meta?: Record<string, string>,
-    throughputPerMs: number = 1
-  ): Promise<AcquireResponse> {
+  async acquire(options: AcquireOptions): Promise<AcquireResponse> {
+    const { throughputPerMs = 1 } = options;
     const now = Date.now();
     const expired = now + 600000;  // 10分
-    const maxPerLease = 256;  // bitSeq=8
+    const maxPerLease = 1 << this.config.bitSeq;  // 256
     const count = Math.ceil(throughputPerMs / maxPerLease);
     const results: LeaseInfo[] = [];
 
@@ -819,7 +849,13 @@ class MemoryLeaseProvider implements LeaseProvider {
         const secret = Math.random().toString(36).slice(2);
         this.leases.set(id, { secret, expired });
         this.lastAssigned = id;
-        results.push({ id, created: now, expired, secret });
+        results.push({
+          id,
+          created: now,
+          expired,
+          secret,
+          ...this.config,
+        });
       }
     }
 
@@ -827,17 +863,12 @@ class MemoryLeaseProvider implements LeaseProvider {
       throw new Error('No machine ID available');
     }
 
-    return {
-      customEpoch: Date.parse("2026-01-01T00:00:00Z"),
-      bitReserve: 1,
-      bitTs: 41,
-      bitId: 14,
-      bitSeq: 8,
-      leases: results,
-    };
+    return { leases: results };
   }
 
-  async release(id: number, signature: string, timestamp: number): Promise<void> {
+  async release(options: ReleaseOptions): Promise<void> {
+    const { id, signature, timestamp } = options;
+
     if (Math.abs(Date.now() - timestamp) > 30000) {
       throw new Error('Timestamp expired');
     }
