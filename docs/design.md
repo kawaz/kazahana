@@ -903,8 +903,8 @@ class MemoryLeaseProvider implements LeaseProvider {
 | モード | アルゴリズム | シークレット | 用途 |
 |--------|-------------|------------|------|
 | デフォルト | **moremur** | 不要 | 連番隠蔽のみ（開発・一般用途） |
-| 暗号化 | **XTEA** (64ラウンド) | 必要 | 予測不可能性が重要な場合（デフォルト） |
-| 暗号化（高速） | **Speck64** (27ラウンド) | 必要 | 大量処理が必要な場合（オプション） |
+| 暗号化 | **Speck64** (27ラウンド) | 必要 | 予測不可能性が重要な場合（デフォルト） |
+| 暗号化（代替） | **XTEA** (64ラウンド) | 必要 | NSA設計を避けたい場合（オプション） |
 
 > 設計判断の詳細は「付録A.18 暗号化モードのアルゴリズム選定」を参照
 
@@ -938,14 +938,47 @@ function moremur_decode(x: bigint): bigint {
 
 参考: https://mostlymangling.blogspot.com/2019/12/stronger-better-morer-moremur-better.html
 
-### 8.4 暗号化モード（XTEA）— デフォルト
+### 8.4 暗号化モード（Speck64）— デフォルト
 
-Needham & Wheeler（1997年）の64bitブロック暗号。ARX構造でシンプルに実装でき、主要言語で既存パッケージも利用可能。
+NSA設計の軽量暗号。高速で技術的には安全（70本以上の論文で解析済み、full-round攻撃なし）。
+
+- 鍵長: 128bit
+- ラウンド数: 27
+- 構造: ARX
+- 性能: ~150M ops/sec
+
+```typescript
+function speck64_encrypt(pt: [number, number], key: number[]): [number, number] {
+  // 鍵スケジュール
+  const k = new Uint32Array(27);
+  k[0] = key[0];
+  let l = [key[1], key[2], key[3]];
+  for (let i = 0; i < 26; i++) {
+    const li = (i + 3) % 3;
+    l[li] = ((k[i] + ror32(l[i % 3], 8)) ^ i) >>> 0;
+    k[i + 1] = (rol32(k[i], 3) ^ l[li]) >>> 0;
+  }
+
+  // 暗号化
+  let [x, y] = pt;
+  for (let i = 0; i < 27; i++) {
+    x = ((ror32(x, 8) + y) ^ k[i]) >>> 0;
+    y = (rol32(y, 3) ^ x) >>> 0;
+  }
+  return [x, y];
+}
+```
+
+参考: https://eprint.iacr.org/2013/404.pdf
+
+### 8.4.1 暗号化モード（XTEA）— NSA懸念向けオプション
+
+Needham & Wheeler（1997年）の64bitブロック暗号。ケンブリッジ大学の研究者が設計。NSA設計を避けたいユーザー向け。
 
 - 鍵長: 128bit
 - ラウンド数: 64（推奨）
 - 構造: Feistel Network + ARX
-- 性能: ~15M ops/sec
+- 性能: ~15M ops/sec（Speck64の約1/10）
 
 ```typescript
 function xtea_encrypt(v: [number, number], key: number[]): [number, number] {
@@ -982,39 +1015,6 @@ function xtea_decrypt(v: [number, number], key: number[]): [number, number] {
 ```
 
 参考: http://www.cix.co.uk/~klockstone/xtea.pdf
-
-### 8.4.1 暗号化モード（Speck64）— 高速オプション
-
-NSA設計の軽量暗号。XTEAの約10倍高速だが、設計者への心理的抵抗がある場合はXTEAを使用。
-
-- 鍵長: 128bit
-- ラウンド数: 27
-- 構造: ARX
-- 性能: ~150M ops/sec（XTEAの約10倍）
-
-```typescript
-function speck64_encrypt(pt: [number, number], key: number[]): [number, number] {
-  // 鍵スケジュール
-  const k = new Uint32Array(27);
-  k[0] = key[0];
-  let l = [key[1], key[2], key[3]];
-  for (let i = 0; i < 26; i++) {
-    const li = (i + 3) % 3;
-    l[li] = ((k[i] + ror32(l[i % 3], 8)) ^ i) >>> 0;
-    k[i + 1] = (rol32(k[i], 3) ^ l[li]) >>> 0;
-  }
-
-  // 暗号化
-  let [x, y] = pt;
-  for (let i = 0; i < 27; i++) {
-    x = ((ror32(x, 8) + y) ^ k[i]) >>> 0;
-    y = (rol32(y, 3) ^ x) >>> 0;
-  }
-  return [x, y];
-}
-```
-
-参考: https://eprint.iacr.org/2013/404.pdf
 
 ### 8.5 出力形式: base64url
 
@@ -1054,18 +1054,18 @@ interface KazahanaClientConfig {
 
   /**
    * 暗号化アルゴリズム（externalIdSecret指定時のみ有効）
-   * @default 'xtea'
+   * @default 'speck64'
    */
-  externalIdAlgorithm?: 'xtea' | 'speck64';
+  externalIdAlgorithm?: 'speck64' | 'xtea';
 }
 ```
 
 #### 個別関数（スタンドアロン）
 
 ```typescript
-type EncryptionAlgorithm = 'xtea' | 'speck64';
+type EncryptionAlgorithm = 'speck64' | 'xtea';
 
-// シークレットなし: moremur
+// シークレットなし: moremur、シークレットあり: speck64（デフォルト）
 function toExternalId(id: bigint, secret?: string, algorithm?: EncryptionAlgorithm): string
 function toInternalId(externalId: string, secret?: string, algorithm?: EncryptionAlgorithm): bigint
 
@@ -1599,7 +1599,7 @@ this.leases.sort((a, b) => a.id - b.id);
 
 **選定結果**:
 - **デフォルトモード**: moremur（Pelle Evensen, 2020）
-- **暗号化モード**: XTEA（デフォルト）/ Speck64（高速オプション）
+- **暗号化モード**: Speck64（デフォルト）/ XTEA（NSA懸念向けオプション）
 
 **出力形式**: base64url（11文字固定）
 
@@ -1681,42 +1681,56 @@ this.leases.sort((a, b) => a.id - b.id);
 
 ### A.18 暗号化モードのアルゴリズム選定
 
-**検討内容**: XTEA、Speck64、Ascon、Blowfish 等の候補
+**検討内容**: Speck64、XTEA、Ascon、Blowfish 等の候補
 
-**採用**: XTEA（デフォルト）+ Speck64（高速オプション）
+**採用**: Speck64（デフォルト）+ XTEA（NSA懸念向けオプション）
 
 両方を実装し、ユーザーが選択可能とする。
 
-#### XTEA をデフォルトとした理由
-
-1. **実績**
-   - 1997年発表、約30年の歴史
-   - 学術論文での解析が豊富、full-round攻撃は発見されていない
-
-2. **実装の単純さ**
-   - ARX構造（Sボックス不要）
-   - 主要言語でパッケージあり
-
-3. **政治的中立性**
-   - ケンブリッジ大学の研究者が設計
-   - 「なぜこの暗号？」に対して説明しやすい
-
-#### Speck64 を高速オプションとして追加した理由
+#### Speck64 をデフォルトとした理由
 
 1. **性能**
    - XTEAの約10倍高速（~7ns vs ~67ns）
-   - 大量バッチ処理に有用
+   - 大量処理でもボトルネックにならない
 
 2. **技術的安全性**
    - 70本以上の論文で解析済み
    - full-round攻撃は発見されていない
+   - 実用上の脆弱性は報告されていない
 
-3. **ISO標準化経緯の明確化**
-   - 2018年: ISO/IEC JTC 1/SC 27（暗号標準委員会）で**拒否**
-   - 2018年: ISO/IEC 29167-22（RFID air interface標準）として**別委員会で採用**
-   - 「暗号標準」としては採用されていない点に注意
+3. **実装の単純さ**
+   - ARX構造（Sボックス不要）
+   - 約15行で実装可能
 
-NSA懸念を重視するユーザーはXTEAを選択すればよい。
+#### NSA懸念について
+
+Speck64はNSA設計のため、一部のユーザーに心理的抵抗がある:
+
+- 2013年スノーデン事件後、NSA設計暗号への不信感が高まった
+- Dual_EC_DRBGにバックドアが仕込まれていた前例
+- Speck自体に脆弱性は見つかっていないが、「なんとなく嫌」という感情は理解できる
+
+**ISO標準化の経緯**:
+- 2018年: ISO/IEC JTC 1/SC 27（暗号標準委員会）で**拒否** — ドイツ、イスラエル、日本が反対
+- 2018年: ISO/IEC 29167-22（RFID air interface標準）として**別委員会で採用**
+- 「暗号標準」としては採用されていない点に注意
+
+技術的には問題ないが、NSA懸念を重視するユーザー向けにXTEAオプションを提供する。
+
+#### XTEA をオプションとして残した理由
+
+1. **政治的中立性**
+   - ケンブリッジ大学の研究者（Wheeler & Needham）が設計
+   - NSAとは無関係
+   - 「なぜこの暗号？」に対して説明しやすい
+
+2. **実績**
+   - 1997年発表、約30年の歴史
+   - 学術論文での解析が豊富、full-round攻撃は発見されていない
+
+3. **十分な性能**
+   - ~15M ops/sec は多くの用途で十分
+   - 大量バッチ処理でなければ問題にならない
 
 #### Ascon を採用しなかった理由
 
@@ -1726,8 +1740,8 @@ NSA懸念を重視するユーザーはXTEAを選択すればよい。
 - 無理に適用すると過剰設計になる
 
 参考:
-- XTEA: http://www.cix.co.uk/~klockstone/xtea.pdf
 - Speck: https://eprint.iacr.org/2013/404.pdf
+- XTEA: http://www.cix.co.uk/~klockstone/xtea.pdf
 - Ascon: https://ascon.iaik.tugraz.at/
 
 ---

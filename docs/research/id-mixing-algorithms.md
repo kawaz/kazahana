@@ -424,28 +424,11 @@ function mix64(x: bigint, shifts: number[], muls: bigint[]): bigint {
 
 ### 暗号化モード（鍵あり）
 
-**採用: XTEA（デフォルト）+ Speck64（オプション）**
+**採用: Speck64（デフォルト）+ XTEA（NSA懸念向けオプション）**
 
 両方を実装し、ユーザーが選択可能とする。
 
-#### XTEA（64ラウンド）— デフォルト
-
-| 項目 | 内容 |
-|------|------|
-| 設計者 | Wheeler & Needham（ケンブリッジ大学） |
-| 公開年 | 1997年 |
-| 構造 | 64bit Feistel + ARX |
-| 推奨ラウンド | 64 |
-| 速度 | ~67 cycles/byte（~15M ops/sec） |
-| 信頼性 | ✅ 学術由来、27年の実績 |
-
-採用理由:
-- 学術機関由来で政治的に中立
-- full-round攻撃は発見されていない
-- 実装が最小（10行程度）
-- 「なぜこの暗号？」への説明が容易
-
-#### Speck64/128 — 高速オプション
+#### Speck64/128 — デフォルト
 
 | 項目 | 内容 |
 |------|------|
@@ -454,35 +437,50 @@ function mix64(x: bigint, shifts: number[], muls: bigint[]): bigint {
 | 構造 | 64bit ARX |
 | ラウンド | 27 |
 | 速度 | ~2.5 cycles/byte（~150M ops/sec） |
-| 信頼性 | ⚠️ NSA由来だが、70本以上の論文で解析済み |
+| 信頼性 | 技術的には安全、70本以上の論文で解析済み |
 
 採用理由:
-- XTEAの約10倍高速
-- 大量処理が必要な場合に有用
+- 高速（XTEAの約10倍）
 - 技術的には安全（full-round攻撃なし）
+- 実装がシンプル（約15行）
 
-NSA懸念を重視するユーザーはXTEAを使用すればよい。
+#### XTEA（64ラウンド）— NSA懸念向けオプション
+
+| 項目 | 内容 |
+|------|------|
+| 設計者 | Wheeler & Needham（ケンブリッジ大学） |
+| 公開年 | 1997年 |
+| 構造 | 64bit Feistel + ARX |
+| 推奨ラウンド | 64 |
+| 速度 | ~67 cycles/byte（~15M ops/sec） |
+| 信頼性 | ✅ 学術由来、約30年の実績 |
+
+採用理由:
+- 学術機関由来で政治的に中立（NSAとは無関係）
+- full-round攻撃は発見されていない
+- 「なぜこの暗号？」への説明が容易
+- NSA設計を避けたいユーザー向け
 
 #### 性能比較
 
-| 処理量 | XTEA (64R) | Speck64/128 |
-|--------|------------|-------------|
-| 1秒あたり処理数 | ~15M ops/sec | ~150M ops/sec |
-| 100万ID処理時間 | ~67ms | ~7ms |
+| 処理量 | Speck64/128 | XTEA (64R) |
+|--------|-------------|------------|
+| 1秒あたり処理数 | ~150M ops/sec | ~15M ops/sec |
+| 100万ID処理時間 | ~7ms | ~67ms |
 
-実用上、100万ID/秒でも67ms。大量バッチ処理でなければXTEAで十分。
+XTEAでも100万ID/秒で67ms。大量バッチ処理でなければ十分。
 
 #### 推奨プリセット
 
 ```typescript
-type EncryptionAlgorithm = 'xtea' | 'speck64';
+type EncryptionAlgorithm = 'speck64' | 'xtea';
 
 const defaults = {
-  // 信頼性重視（デフォルト）
-  standard: 'xtea',
+  // デフォルト（高速）
+  standard: 'speck64',
 
-  // 速度重視（NSA懸念より速度を優先する場合）
-  fast: 'speck64',
+  // NSA懸念がある場合
+  nsa_free: 'xtea',
 } as const;
 ```
 
@@ -627,10 +625,10 @@ function nasam(x: bigint): bigint {
 
 | アルゴリズム | 種別 | 速度 (ns/op) | 設計者 | 信頼性 | 推奨用途 |
 |-------------|------|-------------|--------|--------|---------|
-| moremur | Mixing | ~3.8 | Pelle Evensen | ✅ | **デフォルト** |
+| moremur | Mixing | ~3.8 | Pelle Evensen | ✅ | **Mixingデフォルト** |
 | SplitMix64 | Mixing | ~3.8 | Steele/Lea | ✅ Java標準 | 代替Mixing |
-| XTEA | 暗号 | ~67 | Cambridge | ✅ 27年の実績 | **暗号化デフォルト** |
-| Speck64 | 暗号 | ~7 | NSA | ⚠️ 論争あり | 高速オプション |
+| Speck64 | 暗号 | ~7 | NSA | ✅ 技術的に安全 | **暗号化デフォルト** |
+| XTEA | 暗号 | ~67 | Cambridge | ✅ 約30年の実績 | NSA懸念向け |
 | Ascon | AEAD | N/A | Graz大学 | ✅ NIST標準 | **64bit不適** |
 
 ---
