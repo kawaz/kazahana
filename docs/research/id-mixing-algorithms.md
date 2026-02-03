@@ -329,12 +329,59 @@ function xtea_decrypt(v: [number, number], key: number[]): [number, number] {
 ### SIMON/SPECK への疑念
 
 - 設計根拠が十分に公開されていない
-- ISO標準化で複数国が反対、否決（2018年）
-- 学術解析では脆弱性は見つかっていない
+- 学術解析では脆弱性は見つかっていない（70本以上の論文で解析済み）
+
+### SPECK の ISO 標準化経緯
+
+| 時期 | 出来事 |
+|------|--------|
+| 2013年6月 | NSAがSimon/Speckを公開 |
+| 2015年 | ISO/IEC 29192-2（軽量暗号標準）への追加を提案 |
+| 2018年4月 | **ISO/IEC JTC 1/SC 27で拒否** — ドイツ、イスラエル、日本の代表が反対。NSAの「敵対的」な態度が批判された |
+| 2018年8月 | Linux kernelから削除（4.20） |
+| 2018年10月 | **別のワーキンググループ（SC 31）でRFID標準として承認** — ISO/IEC 29167-22:2018 |
+
+**重要な点**: 「暗号標準」（SC 27）としては拒否されたが、「RFID air interface標準」（SC 31）の一部として別ルートで採用された。同じISOでも異なる委員会での決定であり、「ISO標準になった」という表現は正確ではない。
 
 ### 結論
 
-技術的には問題ないが、「なんとなく嫌」という心理的抵抗がある。ライブラリとして広く使ってもらうには避けた方が無難。
+技術的には問題ない（full-round攻撃は発見されていない）が、心理的抵抗がある層も存在する。ライブラリとしては両方のオプションを提供し、ユーザーに選択させるのが現実的。
+
+---
+
+## Ascon の調査（NIST軽量暗号標準 2023）
+
+### 概要
+
+Asconは2023年にNISTが軽量暗号標準として採用したアルゴリズム。Graz工科大学のチームが設計。
+
+### 構造
+
+- **320bit permutation**（5×64bit）ベースの sponge/duplex 構造
+- 主用途: AEAD（認証付き暗号）、ハッシュ
+- **64bitブロック暗号ではない**
+
+### 64bit全単射への適用可能性
+
+| 方式 | 実現可能性 | 問題点 |
+|------|-----------|--------|
+| Ascon permutationをFeistelのラウンド関数に | 理論上可能 | 過剰設計、遅い |
+| Ascon-PRFの出力を64bitに切り詰め | 可能 | **全単射ではなくなる** |
+| 直接使用 | 不可能 | 320bit状態、64bitブロック暗号ではない |
+
+### 性能比較
+
+| 項目 | Ascon | Speck64/128 |
+|------|-------|-------------|
+| 設計 | 320bit sponge/duplex | 64bitブロック暗号 |
+| 主用途 | AEAD、ハッシュ | 単独暗号化 |
+| 64bit単発暗号 | ❌ 直接不可 | ✅ 可能 |
+| 性能（長メッセージ） | ~8-11 cycles/byte | ~2.5 cycles/byte |
+| NIST標準 | 2023年軽量暗号標準 | なし |
+
+### 結論
+
+**Asconは64bit ID obfuscationには不適**。AEAD/ハッシュ用途に最適化された設計であり、64bit全単射変換という要件を満たせない。
 
 ---
 
@@ -377,14 +424,67 @@ function mix64(x: bigint, shifts: number[], muls: bigint[]): bigint {
 
 ### 暗号化モード（鍵あり）
 
-**採用: XTEA (32ラウンド)**
+**採用: XTEA（デフォルト）+ Speck64（オプション）**
 
-理由:
-- 64bitブロック暗号として実績あり（1997年〜）
-- ARX構造でシンプル（Sボックス不要）
-- 主要言語でパッケージあり
-- 政治的に無難（NSA設計ではない）
-- 特許なし
+両方を実装し、ユーザーが選択可能とする。
+
+#### XTEA（64ラウンド）— デフォルト
+
+| 項目 | 内容 |
+|------|------|
+| 設計者 | Wheeler & Needham（ケンブリッジ大学） |
+| 公開年 | 1997年 |
+| 構造 | 64bit Feistel + ARX |
+| 推奨ラウンド | 64 |
+| 速度 | ~67 cycles/byte（~15M ops/sec） |
+| 信頼性 | ✅ 学術由来、27年の実績 |
+
+採用理由:
+- 学術機関由来で政治的に中立
+- full-round攻撃は発見されていない
+- 実装が最小（10行程度）
+- 「なぜこの暗号？」への説明が容易
+
+#### Speck64/128 — 高速オプション
+
+| 項目 | 内容 |
+|------|------|
+| 設計者 | NSA |
+| 公開年 | 2013年 |
+| 構造 | 64bit ARX |
+| ラウンド | 27 |
+| 速度 | ~2.5 cycles/byte（~150M ops/sec） |
+| 信頼性 | ⚠️ NSA由来だが、70本以上の論文で解析済み |
+
+採用理由:
+- XTEAの約10倍高速
+- 大量処理が必要な場合に有用
+- 技術的には安全（full-round攻撃なし）
+
+NSA懸念を重視するユーザーはXTEAを使用すればよい。
+
+#### 性能比較
+
+| 処理量 | XTEA (64R) | Speck64/128 |
+|--------|------------|-------------|
+| 1秒あたり処理数 | ~15M ops/sec | ~150M ops/sec |
+| 100万ID処理時間 | ~67ms | ~7ms |
+
+実用上、100万ID/秒でも67ms。大量バッチ処理でなければXTEAで十分。
+
+#### 推奨プリセット
+
+```typescript
+type EncryptionAlgorithm = 'xtea' | 'speck64';
+
+const defaults = {
+  // 信頼性重視（デフォルト）
+  standard: 'xtea',
+
+  // 速度重視（NSA懸念より速度を優先する場合）
+  fast: 'speck64',
+} as const;
+```
 
 ---
 
@@ -523,6 +623,18 @@ function nasam(x: bigint): bigint {
 
 ---
 
+## 最終比較表
+
+| アルゴリズム | 種別 | 速度 (ns/op) | 設計者 | 信頼性 | 推奨用途 |
+|-------------|------|-------------|--------|--------|---------|
+| moremur | Mixing | ~3.8 | Pelle Evensen | ✅ | **デフォルト** |
+| SplitMix64 | Mixing | ~3.8 | Steele/Lea | ✅ Java標準 | 代替Mixing |
+| XTEA | 暗号 | ~67 | Cambridge | ✅ 27年の実績 | **暗号化デフォルト** |
+| Speck64 | 暗号 | ~7 | NSA | ⚠️ 論争あり | 高速オプション |
+| Ascon | AEAD | N/A | Graz大学 | ✅ NIST標準 | **64bit不適** |
+
+---
+
 ## 参考文献
 
 ### PCG
@@ -549,6 +661,16 @@ function nasam(x: bigint): bigint {
 ### rrmxmx / nasam
 - Pelle Evensen. "Better, stronger, mixer, and target the final avalanche" (2020)
 - https://mostlymangling.blogspot.com/2020/01/nasam-not-another-strange-acronym-mixer.html
+
+### Speck64
+- Ray Beaulieu et al. "The SIMON and SPECK Families of Lightweight Block Ciphers" (2013)
+- https://eprint.iacr.org/2013/404.pdf
+- ISO/IEC 29167-22:2018（RFID標準としての採用）
+
+### Ascon
+- Christoph Dobraunig et al. "Ascon v1.2" (2021)
+- https://ascon.iaik.tugraz.at/
+- NIST Lightweight Cryptography Standardization (2023): https://csrc.nist.gov/projects/lightweight-cryptography
 
 ### 統計テスト
 - PractRand: http://pracrand.sourceforge.net/
